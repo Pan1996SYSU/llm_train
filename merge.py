@@ -1,23 +1,24 @@
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from loguru import logger
+from transformers import HfArgumentParser
 
-# base模型和lora训练后保存模型的位置
-base_model_path = r"D:\GitHub\LLaMA-Factory\qwen\Qwen2-1.5B-Instruct"
-lora_path = r"D:\GitHub\LLaMA-Factory\output\Qwen2\checkpoint-100"
-# 合并后整个模型的保存地址
-merge_output_dir = r"C:\Users\11656\Desktop\qweq"
+from utils.args import CommonArgs
+from utils.constant import SEPARATOR
+from utils.func import merge_model
 
-tokenizer = AutoTokenizer.from_pretrained(base_model_path)
-base_model = AutoModelForCausalLM.from_pretrained(
-    base_model_path,
-    device_map="cuda",
-    torch_dtype="auto",
-    trust_remote_code=True,
-)
 
-lora_model = PeftModel.from_pretrained(base_model, lora_path)
-model = lora_model.merge_and_unload()
+def main():
+    parser = HfArgumentParser((CommonArgs,))
+    args = parser.parse_args_into_dataclasses()[0]
+    tokenizer, lora_model = merge_model(args)
+    # 开始合并
+    logger.info(f"{SEPARATOR} 开始合并 {SEPARATOR}")
+    model = lora_model.merge_and_unload()
+    merge_output_dir = args.merge_output_dir
+    if merge_output_dir:
+        model.save_pretrained(merge_output_dir)
+        tokenizer.save_pretrained(merge_output_dir)
+    logger.info(f"{SEPARATOR} 合并结束 {SEPARATOR}")
 
-if merge_output_dir:
-    model.save_pretrained(merge_output_dir)
-    tokenizer.save_pretrained(merge_output_dir)
+
+if __name__ == "__main__":
+    main()

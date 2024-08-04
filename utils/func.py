@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 from os.path import join
 
@@ -7,7 +8,7 @@ import torch
 import torch.nn as nn
 from datasets import load_dataset
 from loguru import logger
-from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training, PeftModel
 from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, Trainer, \
     BitsAndBytesConfig, HfArgumentParser, set_seed
 from trl import DPOTrainer
@@ -30,6 +31,91 @@ def load_config(train_args_path):
     class_name = "TrainArgument"
     train_argument = getattr(module, class_name)()
     return train_argument
+
+
+def merge_model(args):
+    """
+    模型合并
+    @param args: 常规配置参数
+    @return: 分词器，模型
+    """
+    if not os.path.exists(args.base_model_path):
+        raise Exception("请检查基础模型路径")
+    if not os.path.exists(args.lora_model_path):
+        raise Exception("请检查微调模型路径")
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model_path)
+    base_model = AutoModelForCausalLM.from_pretrained(
+        args.base_model_path,
+        device_map=args.device_map,
+        torch_dtype=args.torch_dtype,
+        trust_remote_code=True,
+    )
+
+    lora_model = PeftModel.from_pretrained(base_model, args.lora_model_path)
+    return tokenizer, lora_model
+
+
+def get_inference_model(args):
+    """
+    初始化推理模型
+    @param args: 模型配置参数
+    @return: 模型，分词器
+    """
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path,
+                                              use_fast=args.use_fast,
+                                              trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(args.inference_model_path,
+                                                 device_map=args.device_map,
+                                                 torch_dtype=args.torch_dtype)
+    if args.model_id:
+        model = PeftModel.from_pretrained(model, model_id=args.model_id)
+    else:
+        model = model
+    return model, tokenizer
+
+
+def get_messages(args):
+    """
+    获取测试数据集数据
+    @param args: 配置参数
+    @return: 数据集数据列表
+    """
+    messages_list = []
+    if not os.path.exists(args.corpus_path):
+        raise Exception("请检查测试数据路径")
+    with open(args.corpus_path, 'r', encoding='utf-8') as file:
+        for line in file:
+            # 解析每一行的JSON数据
+            data = json.loads(line)
+            instruction = data['instruction']
+            input_value = data['input']
+
+            messages = [
+                {"role": "system", "content": f"{instruction}"},
+                {"role": "user", "content": f"{input_value}"}
+            ]
+            messages_list.append(messages)
+    return messages_list
+
+
+def predict(args, messages, model, tokenizer):
+    """
+    模型推理
+    @param args: 配置参数
+    @param messages: 模型输入信息
+    @param model: 模型
+    @param tokenizer: 分词器
+    @return: 回答
+    """
+    text = tokenizer.apply_chat_template(messages, tokenize=args.tokenize,
+                                         add_generation_prompt=args.add_generation_prompt)
+    model_inputs = tokenizer([text], return_tensors=args.return_tensors).to(args.device_map)
+
+    generated_ids = model.generate(model_inputs.input_ids, max_new_tokens=args.max_new_tokens)
+    generated_ids = [output_ids[len(input_ids):] for input_ids, output_ids in
+                     zip(model_inputs.input_ids, generated_ids)]
+    answer = tokenizer.batch_decode(generated_ids, skip_special_tokens=args.skip_special_tokens)[0]
+    return answer
 
 
 def initial_args():
